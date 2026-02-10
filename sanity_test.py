@@ -40,7 +40,11 @@ timestep_input = ProcessingMechanism(
     name="TIMESTEP INPUT",
     default_variable=[0]
 )
-
+# Action input used only when explicitly storing an experience in EM
+action_input = ProcessingMechanism(
+    name="ACTION INPUT",
+    default_variable=[0, 0, 0, 0, 0, 0, 0]
+)
 # Output mechanism for EM (teacher signal)
 em_output = ProcessingMechanism(
     name="EM OUTPUT",
@@ -77,7 +81,7 @@ instruct_em = EMComposition(
     memory_capacity=300,  # Large enough to store full trajectories
     memory_decay_rate=0,
     memory_fill=0,  # No background noise — slots stay truly empty
-    storage_prob=1.0,  # Store every experience that we explicitly add
+    storage_prob=0.0,
     fields={
         "AGENT X": {FIELD_WEIGHT: 2, LEARN_FIELD_WEIGHT: False, TARGET_FIELD: False},
         "AGENT Y": {FIELD_WEIGHT: 2, LEARN_FIELD_WEIGHT: False, TARGET_FIELD: False},
@@ -172,36 +176,44 @@ timestep_to_em_time_step = [timestep_input,
                                               receiver=instruct_em.nodes["TIME STEP [QUERY]"], learnable=False),
                             instruct_em]
 
-# Values for target fields are set to zero (so retrieved values are driven by memory)
-zero_to_value = np.zeros((8, 1))
-state_to_em_right_value = [state_input,
-                           MappingProjection(matrix=zero_to_value, sender=state_input,
-                                             receiver=instruct_em.nodes["RIGHT [VALUE]"], learnable=False),
+# Action pathways into EM target/value fields (used only during explicit storage)
+action_right_extract = np.zeros((7, 1)); action_right_extract[0, 0] = 1
+action_left_extract = np.zeros((7, 1)); action_left_extract[1, 0] = 1
+action_up_extract = np.zeros((7, 1)); action_up_extract[2, 0] = 1
+action_down_extract = np.zeros((7, 1)); action_down_extract[3, 0] = 1
+action_open_extract = np.zeros((7, 1)); action_open_extract[4, 0] = 1
+action_pickup_extract = np.zeros((7, 1)); action_pickup_extract[5, 0] = 1
+action_read_extract = np.zeros((7, 1)); action_read_extract[6, 0] = 1
+
+action_to_em_right_value = [action_input,
+                            MappingProjection(matrix=action_right_extract, sender=action_input,
+                                              receiver=instruct_em.nodes["RIGHT [VALUE]"], learnable=False),
+                          instruct_em]
+
+action_to_em_left_value = [action_input,
+                           MappingProjection(matrix=action_left_extract, sender=action_input,
+                                             receiver=instruct_em.nodes["LEFT [VALUE]"], learnable=False),
                            instruct_em]
-state_to_em_left_value = [state_input,
-                          MappingProjection(matrix=zero_to_value, sender=state_input,
-                                            receiver=instruct_em.nodes["LEFT [VALUE]"], learnable=False),
-                          instruct_em]
-state_to_em_up_value = [state_input,
-                        MappingProjection(matrix=zero_to_value, sender=state_input,
-                                          receiver=instruct_em.nodes["UP [VALUE]"], learnable=False),
-                        instruct_em]
-state_to_em_down_value = [state_input,
-                          MappingProjection(matrix=zero_to_value, sender=state_input,
-                                            receiver=instruct_em.nodes["DOWN [VALUE]"], learnable=False),
-                          instruct_em]
-state_to_em_open_value = [state_input,
-                          MappingProjection(matrix=zero_to_value, sender=state_input,
-                                            receiver=instruct_em.nodes["OPEN ACTION [VALUE]"], learnable=False),
-                          instruct_em]
-state_to_em_pickup_value = [state_input,
-                            MappingProjection(matrix=zero_to_value, sender=state_input,
-                                              receiver=instruct_em.nodes["PICKUP [VALUE]"], learnable=False),
-                            instruct_em]
-state_to_em_read_value = [state_input,
-                          MappingProjection(matrix=zero_to_value, sender=state_input,
-                                            receiver=instruct_em.nodes["READ [VALUE]"], learnable=False),
-                          instruct_em]
+action_to_em_up_value = [action_input,
+                         MappingProjection(matrix=action_up_extract, sender=action_input,
+                                           receiver=instruct_em.nodes["UP [VALUE]"], learnable=False),
+                         instruct_em]
+action_to_em_down_value = [action_input,
+                           MappingProjection(matrix=action_down_extract, sender=action_input,
+                                             receiver=instruct_em.nodes["DOWN [VALUE]"], learnable=False),
+                           instruct_em]
+action_to_em_open_value = [action_input,
+                           MappingProjection(matrix=action_open_extract, sender=action_input,
+                                             receiver=instruct_em.nodes["OPEN ACTION [VALUE]"], learnable=False),
+                           instruct_em]
+action_to_em_pickup_value = [action_input,
+                             MappingProjection(matrix=action_pickup_extract, sender=action_input,
+                                               receiver=instruct_em.nodes["PICKUP [VALUE]"], learnable=False),
+                             instruct_em]
+action_to_em_read_value = [action_input,
+                           MappingProjection(matrix=action_read_extract, sender=action_input,
+                                             receiver=instruct_em.nodes["READ [VALUE]"], learnable=False),
+                           instruct_em]
 
 # Map retrieved action fields into em_output vector (7 dims)
 state_to_em_right = [instruct_em,
@@ -281,13 +293,13 @@ combined_comp = AutodiffComposition(
         # NEW
         timestep_to_em_time_step,
 
-        state_to_em_right_value,
-        state_to_em_left_value,
-        state_to_em_up_value,
-        state_to_em_down_value,
-        state_to_em_open_value,
-        state_to_em_pickup_value,
-        state_to_em_read_value,
+        action_to_em_right_value,
+        action_to_em_left_value,
+        action_to_em_up_value,
+        action_to_em_down_value,
+        action_to_em_open_value,
+        action_to_em_pickup_value,
+        action_to_em_read_value,
         state_to_em_right,
         state_to_em_left,
         state_to_em_up,
@@ -378,15 +390,17 @@ def store_experience_in_em(state, step_number, action_vec, episode_reward, episo
         # Store by running the composition in learn mode
         comp_inputs = {
             state_input: state,
-            timestep_input: timestep_arr
+            timestep_input: timestep_arr,
+            action_input: action_vec,
         }
 
-        # Run learn to store the memory
-        combined_comp.learn(
+        # Temporarily enable EM storage only for this explicit store step
+        instruct_em.parameters.storage_prob.set(1.0, context=combined_comp)
+        combined_comp.run(
             inputs=comp_inputs,
             execution_mode=ExecutionMode.PyTorch
         )
-
+        instruct_em.parameters.storage_prob.set(0.0, context=combined_comp)
         EM_SLOT_REWARD[slot] = float(episode_reward)
         EM_SLOT_STEPS[slot] = float(episode_steps)
 
@@ -450,7 +464,8 @@ def main():
             # Inputs to composition (state + normalized timestep)
             comp_inputs = {
                 state_input: flattened_input,
-                timestep_input: np.array([timestep_norm], dtype=float)
+                timestep_input: np.array([timestep_norm], dtype=float),
+                action_input: np.zeros(7, dtype=float)
             }
 
             # Choose action: MLP (before first success) else EM (after first success)
@@ -474,7 +489,7 @@ def main():
                 # After first success: only use EM
                 exploration_type = "EM"
 
-                combined_comp.learn(
+                combined_comp.run(
                     inputs=comp_inputs,
                     execution_mode=ExecutionMode.PyTorch
                 )
