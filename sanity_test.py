@@ -394,13 +394,14 @@ def store_experience_in_em(state, step_number, action_vec, episode_reward, episo
             action_input: action_vec,
         }
 
-        # Temporarily enable EM storage only for this explicit store step
-        instruct_em.parameters.storage_prob.set(1.0, context=combined_comp)
+        # Drive EM input nodes through the composition, then explicitly encode one memory.
+        # NOTE: in nested Autodiff/PyTorch execution, runtime storage_prob context can differ
+        # from `combined_comp`, so we explicitly call _encode_memory here for deterministic storage.
         combined_comp.run(
             inputs=comp_inputs,
             execution_mode=ExecutionMode.PyTorch
         )
-        instruct_em.parameters.storage_prob.set(0.0, context=combined_comp)
+        instruct_em._encode_memory(context=combined_comp)
         EM_SLOT_REWARD[slot] = float(episode_reward)
         EM_SLOT_STEPS[slot] = float(episode_steps)
 
@@ -489,14 +490,11 @@ def main():
                 # After first success: only use EM
                 exploration_type = "EM"
 
-                combined_comp.run(
+                combined_comp.learn(
                     inputs=comp_inputs,
                     execution_mode=ExecutionMode.PyTorch
                 )
 
-                # ═══════════════════════════════════════════════════════
-                # PRINT RETRIEVED EM MEMORY
-                # ═══════════════════════════════════════════════════════
                 print("\n  ━━━ EM RETRIEVED MEMORY ━━━")
                 retrieved_fields = {
                     "AGENT X": instruct_em.nodes["AGENT X [RETRIEVED]"].parameters.value.get('COMBINED COMPOSITION')[0][
@@ -546,13 +544,14 @@ def main():
 
                 action_vec = get_em_action()
 
+
             if len(successful_episodes) == 1:
                 print("\n" + "=" * 70)
                 print("  FIRST SUCCESS ACHIEVED! Switching to PURE EM mode...")
 
                 # DEBUG: Print what's actually stored in EM
                 print("\n  DEBUG: Checking stored memories...")
-                current_memory = instruct_em.parameters.memory.get()
+                current_memory = instruct_em.parameters.memory.get(combined_comp)
                 for i in range(min(5, len(current_memory))):  # Print first 5 memories
                     mem = current_memory[i].flatten()
                     print(
@@ -592,10 +591,10 @@ def main():
                 print(f"Trial {trial + 1} completed in {steps} steps (reward={episode_reward:.2f})")
 
                 should_store = False
-                if STORE_ON_SUCCESS and episode_reward > 0:
+                if (STORE_ON_SUCCESS and episode_reward > 0) and len(successful_episodes) == 0:
                     should_store = True
                     print(f"  ✓ SUCCESS!")
-                elif REWARD_SHAPING and episode_reward > best_reward - PROGRESS_THRESHOLD:
+                elif REWARD_SHAPING and episode_reward > best_reward - PROGRESS_THRESHOLD and len(successful_episodes) == 0:
                     should_store = True
                     print(f"  ↗ PROGRESS! (best so far: {best_reward:.2f})")
 
